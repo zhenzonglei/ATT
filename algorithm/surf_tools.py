@@ -370,42 +370,13 @@ def _mmd_ab(a, b, one_ring_neighbour):
         h.append(hd)
     return h
 
-
-def mesh_edges(faces):
-    """
-    Copy from FreeROI! Not writed by myself!
-    Returns sparse matrix with edges as an adjacency matrix
-
-    Parameters
-    ----------
-    faces : array of shape [n_triangles x 3]
-        The mesh faces
-
-    Returns
-    -------
-    edges : sparse matrix
-        The adjacency matrix
-    """
-    npoints = np.max(faces) + 1
-    nfaces = len(faces)
-    a, b, c = faces.T
-    edges = sparse.coo_matrix((np.ones(nfaces), (a, b)),
-                              shape=(npoints, npoints))
-    edges = edges + sparse.coo_matrix((np.ones(nfaces), (b, c)),
-                                      shape=(npoints, npoints))
-    edges = edges + sparse.coo_matrix((np.ones(nfaces), (c, a)),
-                                      shape=(npoints, npoints))
-    edges = edges + edges.T
-    edges = edges.tocoo()
-    return edges
-
-
-def get_n_ring_neighbor(faces, n=1, ordinal=False):
+def get_n_ring_neighbor(vertx, faces, n=1, ordinal=False):
     """
     Get n ring neighbour from faces array
 
     Parameters:
     ---------
+    vertex: vertex number
     faces : the array of shape [n_triangles, 3]
     n : integer
         specify which ring should be got
@@ -423,40 +394,76 @@ def get_n_ring_neighbor(faces, n=1, ordinal=False):
 
     Example:
     ---------
-    >>> ringlist = get_n_ring_neighbour(faces, n)
+    >>> ringlist = get_n_ring_neighbour(24, faces, n)
     """
-    n_vtx = np.max(faces) + 1  # get the number of vertices
+    if isinstance(vertx, int):
+        vertx = [vertx]
+    nth_ring = [set([vx]) for vx in vertx]
+    nring = [set([vx]) for vx in vertx]
 
-    # find 1_ring neighbors' id for each vertex
-    coo_w = mesh_edges(faces)
-    csr_w = coo_w.tocsr()
-    n_ring_neighbors = [csr_w.indices[csr_w.indptr[i]:csr_w.indptr[i+1]] for i in range(n_vtx)]
-    n_ring_neighbors = [set(i) for i in n_ring_neighbors]
-
-    if n > 1:
-        # find n_ring neighbors
-        one_ring_neighbors = [i.copy() for i in n_ring_neighbors]
-        n_th_ring_neighbors = [i.copy() for i in n_ring_neighbors]
-        # if n>1, go to get more neighbors
-        for i in range(n-1):
-            for neighbor_set in n_th_ring_neighbors:
-                neighbor_set_tmp = neighbor_set.copy()
-                for v_id in neighbor_set_tmp:
-                    neighbor_set.update(one_ring_neighbors[v_id])
-
-            if i == 0:
-                for v_id in range(n_vtx):
-                    n_th_ring_neighbors[v_id].remove(v_id)
-
-            for v_id in range(n_vtx):
-                n_th_ring_neighbors[v_id] -= n_ring_neighbors[v_id]  # get the (i+2)_th ring neighbors
-                n_ring_neighbors[v_id] |= n_th_ring_neighbors[v_id]  # get the (i+2) ring neighbors
-    elif n == 1:
-        n_th_ring_neighbors = n_ring_neighbors
+    while n != 0:
+        n = n - 1
+        for idx, neighbor_set in enumerate(nth_ring):
+            neighbor_set_tmp = [_get_connvex_neigh(vx, faces) for vx in neighbor_set]
+            neighbor_set_tmp = set([item for sublist in neighbor_set_tmp for item in sublist])
+            neighbor_set_tmp.difference_update(nring[idx])
+            nth_ring[idx] = neighbor_set_tmp
+            nring[idx].update(nth_ring[idx])
+    if ordinal is True:
+        return nth_ring
     else:
-        raise RuntimeError("The number of rings should be equal or greater than 1!")
+        return nring
 
-    if ordinal:
-        return n_th_ring_neighbors
+def get_connvex(seedvex, faces, mask, masklabel = 1):
+    """
+    Get connected vertices that contain in mask
+    We firstly need a start point to acquire connected vertices, then do region growing until all vertices in mask were included
+    That means, output should satisfied two condition:
+    1 overlap with mask
+    2 connected with each other
+    
+    Parameters:
+    -----------
+    seedvex: seed point (start point)
+    faces: faces array, vertex relationship
+    mask: overlapping mask
+    masklabel: specific mask label used as restriction
+
+    Return:
+    -------
+    connvex: connected vertice set
+
+    Example:
+    --------
+    >>> connvex = get_connvex(24, faces, mask)
+    """
+    connvex = set()
+    connvex.add(seedvex)
+    connvex_temp = _get_connvex_neigh(seedvex, faces, mask, masklabel)
+    while not connvex_temp.issubset(connvex):
+        connvex_dif = connvex_temp.difference(connvex)
+        connvex.update(connvex_dif)
+        connvex_temp = set()
+        for sx in connvex_dif: 
+            connvex_temp.update(_get_connvex_neigh(sx, faces, mask, masklabel))
+        print('Size of sulcus {0}'.format(len(connvex)))
+    return connvex  
+
+def _get_connvex_neigh(seedvex, faces, mask = None, masklabel = 1):
+    """
+    Function to get neighbouring vertices of a seed that satisfied overlap with mask
+    """
+    if mask is not None:
+        assert mask.shape[0] == np.max(faces) + 1 ,"mask need to have same vertex number with faces connection relationship"
+    assert isinstance(seedvex, (int, np.integer)), "only allow input an integer as seedvex"
+
+    raw_faces, _ = np.where(faces == seedvex)
+    rawconnvex = np.unique(faces[raw_faces])
+    if mask is not None:
+        connvex = set()
+        [connvex.add(i) for i in rawconnvex if mask[i] == masklabel]
     else:
-        return n_ring_neighbors
+        connvex = set(rawconnvex)
+    connvex.discard(seedvex)
+    return connvex
+
